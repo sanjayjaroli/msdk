@@ -18,6 +18,70 @@
  #
  ##############################################################################
 
+################################################################################
+# Detect whether we're working from the Github repo or not.
+# If so, attempt to update the version number files every time we build.
+
+ifeq "$(PYTHON_CMD)" ""
+# Try python
+ifneq "$(wildcard $(MAXIM_PATH)/.git)" ""
+PYTHON_VERSION := $(shell python --version)
+ifneq ($(.SHELLSTATUS),0)
+PYTHON_CMD := none
+else
+PYTHON_CMD := python
+endif
+
+# Try python3
+ifeq "$(PYTHON_CMD)" "none"
+PYTHON_VERSION := $(shell python3 --version)
+ifneq ($(.SHELLSTATUS),0)
+PYTHON_CMD := none
+else
+PYTHON_CMD := python
+endif
+endif
+
+# Export PYTHON_CMD so we don't check for it again unnecessarily
+export PYTHON_CMD
+endif
+
+# Run script
+ifneq "$(PYTHON_CMD)" "none"
+UPDATE_VERSION_OUTPUT := $(shell python $(MAXIM_PATH)/.github/workflows/scripts/update_version.py)
+else
+$(warning No Python installation detected on your system!  Will not automatically update version info.)
+endif
+endif
+
+
+ifneq "$(wildcard $(MAXIM_PATH)/Libraries/CMSIS/Device/Maxim/GCC/mxc_version.mk)" ""
+include $(MAXIM_PATH)/Libraries/CMSIS/Device/Maxim/GCC/mxc_version.mk
+endif
+################################################################################
+
+SUPPRESS_HELP ?= 0
+ifeq "$(SUPPRESS_HELP)" "0"
+ifneq "$(HELP_COMPLETE)" "1"
+
+$(info ****************************************************************************)
+$(info * Analog Devices MSDK)
+ifneq "$(MSDK_VERSION_STRING)" ""
+$(info * $(MSDK_VERSION_STRING))
+endif
+$(info * - User Guide: https://analogdevicesinc.github.io/msdk/USERGUIDE/)
+$(info * - Get Support: https://www.analog.com/support/technical-support.html)
+$(info * - Report Issues: https://github.com/analogdevicesinc/msdk/issues)
+$(info * - Contributing: https://analogdevicesinc.github.io/msdk/CONTRIBUTING/)
+$(info ****************************************************************************)
+# export HELP_COMPLETE so that it's only printed once.
+HELP_COMPLETE = 1
+export HELP_COMPLETE
+endif
+endif
+
+################################################################################
+
 # The build directory
 ifeq "$(BUILD_DIR)" ""
 BUILD_DIR=$(CURDIR)/build
@@ -178,24 +242,48 @@ GCCVERSIONGTEQ4 := 1
 
 # endif
 
-# The flags passed to the assembler.
-AFLAGS=-mthumb         \
-       -mcpu=cortex-m4 \
-       -MD
-ifneq "$(HEAP_SIZE)" ""
-AFLAGS+=-D__HEAP_SIZE=$(HEAP_SIZE)
-endif
-ifneq "$(STACK_SIZE)" ""
-AFLAGS+=-D__STACK_SIZE=$(STACK_SIZE)
-endif
-ifneq "$(SRAM_SIZE)" ""
-AFLAGS+=-D__SRAM_SIZE=$(SRAM_SIZE)
-endif
-AFLAGS+=$(PROJ_AFLAGS)
-
 ifeq "$(MXC_OPTIMIZE_CFLAGS)" ""
 # Default is optimize for size
 MXC_OPTIMIZE_CFLAGS = -Os
+endif
+
+# Select the target ARM processor.
+# Permissible options can be found under the "-mtune" documentation in the GCC manual
+# https://gcc.gnu.org/onlinedocs/gcc/ARM-Options.html
+# Our hardware currently supports
+# - cortex-m4 (default)
+# - cortex-m33
+MCPU ?= cortex-m4
+
+ifeq "$(MCPU)" "cortex-m33"
+# Security mode for the target processor.
+# Acceptable values are
+# - SECURE
+# - NONSECURE
+#
+# When "SECURE" is selected, the build system will link the program binary into the secure
+# memory sections and map peripheral instances onto their corresponding secure
+# address aliases.  "MSECURITY_MODE_SECURE" will be defined at compile time.
+#
+# When "NONSCURE" is selected, the program binary will be linked into the non-secure memory
+# sections and peripherals will be mapped onto the non-secure address aliases.
+# It should be noted that the M33 will boot into secure mode by default, which has access to
+# both the secure and non-secure addresses and aliases.  "MSECURITY_MODE_NONSECURE" will be defined
+# at compile time.
+MSECURITY_MODE ?= SECURE
+
+ifeq "$(MSECURITY_MODE)" "SECURE"
+# Tell the compiler we are building a secure project.  This is required to satisfy the requirements
+# defined in "Armv8-M Security Extension: Requirements on Developments Tools"
+# https://developer.arm.com/documentation/ecm0359818/latest
+PROJ_CFLAGS += -mcmse
+
+PROJ_AFLAGS += -DIS_SECURE_ENVIRONMENT
+
+# Tell the linker we are building a secure project.  This defines the "SECURE_LINK" symbol which the
+# linker uses to set the secure FLASH/SRAM memory address ranges.
+PROJ_LDFLAGS += -Xlinker --defsym=SECURE_LINK=1
+endif
 endif
 
 # Float ABI options:
@@ -238,8 +326,23 @@ endif
 DEFAULT_OPTIMIZE_FLAGS ?= -ffunction-sections -fdata-sections -fsingle-precision-constant
 DEFAULT_WARNING_FLAGS ?= -Wall -Wno-format -Wdouble-promotion
 
+# The flags passed to the assembler.
+AFLAGS=-mthumb         \
+       -mcpu=$(MCPU) \
+       -MD
+ifneq "$(HEAP_SIZE)" ""
+AFLAGS+=-D__HEAP_SIZE=$(HEAP_SIZE)
+endif
+ifneq "$(STACK_SIZE)" ""
+AFLAGS+=-D__STACK_SIZE=$(STACK_SIZE)
+endif
+ifneq "$(SRAM_SIZE)" ""
+AFLAGS+=-D__SRAM_SIZE=$(SRAM_SIZE)
+endif
+AFLAGS+=$(PROJ_AFLAGS)
+
 CFLAGS=-mthumb                                                                 \
-       -mcpu=cortex-m4                                                         \
+       -mcpu=$(MCPU)                                                         \
        -mfloat-abi=$(MFLOAT_ABI)                                               \
        -mfpu=$(MFPU)                                                           \
        -Wa,-mimplicit-it=thumb                                                 \
@@ -288,6 +391,8 @@ CXXFLAGS+=$(CFLAGS)
 
 C_WARNINGS_AS_ERRORS ?= implicit-function-declaration
 CFLAGS += -Werror=$(C_WARNINGS_AS_ERRORS)
+CFLAGS += -Wstrict-prototypes
+# ^ Add strict-prototypes after CXX_FLAGS so it's only added for C builds
 
 # The command for calling the library archiver.
 AR=${PREFIX}-ar
@@ -297,7 +402,7 @@ LD=${PREFIX}-gcc
 
 # The flags passed to the linker.
 LDFLAGS=-mthumb                                                                \
-        -mcpu=cortex-m4                                                        \
+        -mcpu=$(MCPU)                                                          \
         -mfloat-abi=$(MFLOAT_ABI)                                              \
         -mfpu=$(MFPU)                                                          \
         -Xlinker --gc-sections                                                 \
@@ -638,22 +743,5 @@ ifneq "$(QUERY_VAR)" ""
 	@echo $(QUERY_VAR)=$($(QUERY_VAR))
 else
 	$(MAKE) debug
-endif
-
-#################################################################################
-SUPPRESS_HELP ?= 0
-ifeq "$(SUPPRESS_HELP)" "0"
-ifneq "$(HELP_COMPLETE)" "1"
-$(info ****************************************************************************)
-$(info * Analog Devices MSDK)
-$(info * - User Guide: https://analogdevicesinc.github.io/msdk/USERGUIDE/)
-$(info * - Get Support: https://www.analog.com/support/technical-support.html)
-$(info * - Report Issues: https://github.com/analogdevicesinc/msdk/issues)
-$(info * - Contributing: https://analogdevicesinc.github.io/msdk/CONTRIBUTING/)
-$(info ****************************************************************************)
-# export HELP_COMPLETE so that it's only printed once.
-HELP_COMPLETE = 1
-export HELP_COMPLETE
-endif
 endif
 
