@@ -36,12 +36,12 @@ The libc implementation from GCC 11+ depends on _getpid and _kill in some places
 There is no concept of processes/PIDs in the baremetal PeriphDrivers, therefore
 we implement stub functions that return an error code to resolve linker warnings.
 */
-int _getpid(void)
+__weak int _getpid(void)
 {
     return E_NOT_SUPPORTED;
 }
 
-int _kill(void)
+__weak int _kill(void)
 {
     return E_NOT_SUPPORTED;
 }
@@ -146,6 +146,10 @@ __weak void SystemInit(void)
     /* Change system clock source to the main high-speed clock */
     MXC_SYS_Clock_Select(MXC_SYS_CLOCK_IPO);
     SystemCoreClockUpdate();
+
+    /* Set CTB clock frequency to match ISO (full speed). */
+    /* On reset, GCR_CLKCTRL.crpytoclk_duv is set to 1 (ISO/2). */
+    MXC_GCR->clkctrl &= ~(MXC_F_GCR_CLKCTRL_CRYPTOCLK_DIV);
 
     MXC_SYS_ClockEnable(MXC_SYS_PERIPH_CLOCK_GPIO0);
     MXC_SYS_ClockEnable(MXC_SYS_PERIPH_CLOCK_GPIO1);
